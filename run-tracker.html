@@ -1,0 +1,268 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run Tracker (Offline, No Server)</title>
+  <style>
+    :root { --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#9ca3af; --accent:#22d3ee; }
+    html, body { height:100%; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, "Noto Sans", sans-serif; background: linear-gradient(180deg, #0b1220, #0f172a); color: var(--text); display:flex; align-items:center; justify-content:center; }
+    .app { width:min(680px, 96vw); }
+    .card { background:rgba(17,24,39,.8); backdrop-filter: blur(6px); border:1px solid rgba(148,163,184,.2); border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+    h1 { font-size:1.25rem; margin:0 0 10px; letter-spacing:.2px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .metric { background:#0b1220; border:1px solid rgba(148,163,184,.2); padding:12px; border-radius:12px; }
+    .metric .label { font-size:.8rem; color:var(--muted); }
+    .metric .value { font-size:1.3rem; font-weight:600; margin-top:6px; }
+    .controls { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+    button { cursor:pointer; background:#0ea5e9; border:none; color:white; padding:12px 14px; border-radius:12px; font-weight:600; font-size:1rem; }
+    button.secondary { background:#374151; color:#e5e7eb; }
+    button.warn { background:#ef4444; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .note { color:var(--muted); font-size:.85rem; margin-top:10px; }
+    .opts { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+    .opt { background:#0b1220; border:1px solid rgba(148,163,184,.2); padding:10px; border-radius:12px; font-size:.95rem; }
+    .status { margin:8px 0 12px; color:#a7f3d0; font-size:.95rem; }
+    .divider { height:1px; background:rgba(148,163,184,.2); margin:12px 0; border-radius:1px; }
+    .footer { text-align:center; font-size:.8rem; color:var(--muted); margin-top:10px; }
+    .link { color:#67e8f9; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="card">
+      <h1>Run Tracker · Offline · No Server</h1>
+      <div class="status" id="status">Ready. Grant GPS when prompted.</div>
+      <div class="row">
+        <div class="metric">
+          <div class="label">Distance</div>
+          <div class="value"><span id="distm">0</span> m (<span id="distkm">0.000</span> km)</div>
+        </div>
+        <div class="metric">
+          <div class="label">Duration</div>
+          <div class="value" id="dur">00:00:00</div>
+        </div>
+        <div class="metric">
+          <div class="label">Pace</div>
+          <div class="value" id="pace">– min/km</div>
+        </div>
+        <div class="metric">
+          <div class="label">Speed</div>
+          <div class="value" id="speed">0.00 m/s</div>
+        </div>
+        <div class="metric">
+          <div class="label">Points</div>
+          <div class="value" id="points">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">GPS Accuracy</div>
+          <div class="value" id="acc">– m</div>
+        </div>
+      </div><div class="divider"></div>
+
+  <div class="opts">
+    <label class="opt">Max accepted GPS inaccuracy (m)
+      <input id="maxAcc" type="number" min="3" max="100" value="25" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e5e7eb;">
+    </label>
+    <label class="opt"><input id="hiacc" type="checkbox" checked> Enable high-accuracy GPS</label>
+    <label class="opt"><input id="wakelock" type="checkbox" checked> Prevent screen sleep (if supported)</label>
+    <label class="opt"><input id="filterJumps" type="checkbox" checked> Filter unrealistic jumps</label>
+  </div>
+
+  <div class="controls">
+    <button id="start">Start</button>
+    <button id="pause" class="secondary" disabled>Pause</button>
+    <button id="resume" class="secondary" disabled>Resume</button>
+    <button id="reset" class="warn" disabled>Reset</button>
+    <button id="export" class="secondary" disabled>Export GPX</button>
+  </div>
+
+  <p class="note">This app runs entirely in your browser, stores nothing remotely, and requires no account. For best results, use it outdoors with a clear sky view. Distance uses the haversine formula between GPS points, ignoring low-accuracy fixes and big jumps.</p>
+  <div class="footer">Made for you · Keep it local ✨</div>
+</div>
+
+  </main><script>
+(function(){
+  const el = id => document.getElementById(id);
+  const status = el('status');
+  const distm = el('distm');
+  const distkm = el('distkm');
+  const dur = el('dur');
+  const pace = el('pace');
+  const speed = el('speed');
+  const pointsEl = el('points');
+  const accEl = el('acc');
+  const startBtn = el('start');
+  const pauseBtn = el('pause');
+  const resumeBtn = el('resume');
+  const resetBtn = el('reset');
+  const exportBtn = el('export');
+  const maxAcc = el('maxAcc');
+  const hiacc = el('hiacc');
+  const wakelock = el('wakelock');
+  const filterJumps = el('filterJumps');
+
+  let watchId = null;
+  let path = []; // {lat, lon, ele, t, acc}
+  let running = false;
+  let paused = false;
+  let totalDist = 0; // meters
+  let startTime = 0;
+  let pausedTime = 0; // accumulated paused ms
+  let pauseStarted = 0;
+  let rafId = null;
+  let wl = null; // wake lock sentinel
+
+  const haversine = (a,b)=>{
+    const R = 6371000; // m
+    const toRad = x => x*Math.PI/180;
+    const dLat = toRad(b.lat-a.lat);
+    const dLon = toRad(b.lon-a.lon);
+    const s1 = Math.sin(dLat/2), s2 = Math.sin(dLon/2);
+    const A = s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;
+    const c = 2*Math.atan2(Math.sqrt(A), Math.sqrt(1-A));
+    return R*c;
+  };
+
+  function fmtTime(ms){
+    const s = Math.max(0, Math.floor(ms/1000));
+    const hh = String(Math.floor(s/3600)).padStart(2,'0');
+    const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  function updateUI(){
+    const now = Date.now();
+    const active = running && !paused;
+    const elapsed = active ? (now - startTime - pausedTime) : (startTime? (pauseStarted? (pauseStarted - startTime - pausedTime) : (now - startTime - pausedTime)) : 0);
+    dur.textContent = fmtTime(elapsed);
+    distm.textContent = Math.round(totalDist);
+    distkm.textContent = (totalDist/1000).toFixed(3);
+    // pace: min/km
+    if (totalDist > 1 && elapsed > 0){
+      const minPerKm = (elapsed/60000) / (totalDist/1000);
+      const mm = Math.floor(minPerKm);
+      const ss = Math.round((minPerKm-mm)*60).toString().padStart(2,'0');
+      pace.textContent = `${mm}:${ss} min/km`;
+    } else {
+      pace.textContent = '– min/km';
+    }
+    pointsEl.textContent = path.length;
+    if (path.length){
+      const a = path[path.length-1];
+      accEl.textContent = a.acc? a.acc.toFixed(0)+' m' : '– m';
+    }
+    rafId = requestAnimationFrame(updateUI);
+  }
+
+  async function requestWakeLock(enable){
+    try{
+      if (enable && 'wakeLock' in navigator) {
+        wl = await navigator.wakeLock.request('screen');
+        wl.addEventListener('release', ()=>{});
+      } else if (wl) {
+        await wl.release(); wl=null;
+      }
+    }catch(e){ /* ignore */ }
+  }
+
+  function onPos(p){
+    const { latitude:lat, longitude:lon, altitude, accuracy } = p.coords;
+    const t = p.timestamp;
+    accEl.textContent = accuracy? accuracy.toFixed(0)+' m' : '– m';
+
+    // drop if too inaccurate
+    const maxA = Number(maxAcc.value)||25;
+    if (accuracy && accuracy > maxA) return;
+
+    const pt = {lat, lon, ele: altitude ?? null, t, acc: accuracy ?? null};
+
+    // distance update
+    if (path.length>0){
+      const prev = path[path.length-1];
+      let d = haversine(prev, pt);
+      // filter unrealistic jumps (>7 m/s over segment) if enabled
+      if (filterJumps.checked) {
+        const dt = Math.max(1, (t - prev.t)/1000);
+        const v = d/dt; // m/s
+        if (v > 7 && accuracy && accuracy > 8) {
+          // skip this noisy point
+          return;
+        }
+      }
+      totalDist += d;
+      const dt = Math.max(1,(t - prev.t)/1000);
+      speed.textContent = (d/dt).toFixed(2) + ' m/s';
+    }
+    path.push(pt);
+  }
+
+  function onErr(err){
+    status.textContent = 'GPS error: ' + err.message;
+  }
+
+  function start(){
+    if (running) return;
+    running = true; paused = false; totalDist = totalDist||0; startTime = startTime||Date.now();
+    status.textContent = 'Tracking…';
+    startBtn.disabled = true; pauseBtn.disabled = false; resumeBtn.disabled = true; resetBtn.disabled = false; exportBtn.disabled = true;
+    if (rafId==null) rafId = requestAnimationFrame(updateUI);
+    const opts = { enableHighAccuracy: hiacc.checked, maximumAge: 0, timeout: 10000 };
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, opts);
+    requestWakeLock(wakelock.checked);
+  }
+  function pause(){
+    if (!running || paused) return;
+    paused = true; pauseStarted = Date.now();
+    status.textContent = 'Paused';
+    if (watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; }
+    startBtn.disabled = true; pauseBtn.disabled = true; resumeBtn.disabled = false; resetBtn.disabled = false; exportBtn.disabled = false;
+    requestWakeLock(false);
+  }
+  function resume(){
+    if (!running || !paused) return;
+    paused = false; pausedTime += Date.now() - pauseStarted; pauseStarted = 0;
+    status.textContent = 'Tracking…';
+    const opts = { enableHighAccuracy: hiacc.checked, maximumAge: 0, timeout: 10000 };
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, opts);
+    startBtn.disabled = true; pauseBtn.disabled = false; resumeBtn.disabled = true; resetBtn.disabled = false; exportBtn.disabled = true;
+    requestWakeLock(wakelock.checked);
+  }
+  function reset(){
+    if (watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; }
+    running=false; paused=false; startTime=0; pausedTime=0; pauseStarted=0; totalDist=0; path.length=0;
+    status.textContent = 'Ready. Grant GPS when prompted.';
+    startBtn.disabled = false; pauseBtn.disabled = true; resumeBtn.disabled = true; resetBtn.disabled = true; exportBtn.disabled = true;
+    speed.textContent = '0.00 m/s';
+  }
+
+  function toGPX(){
+    if (path.length===0) return '';
+    const esc = s=>String(s).replace(/[<&>]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    const iso = t=> new Date(t).toISOString();
+    const trkpts = path.map(p=>`<trkpt lat="${p.lat}" lon="${p.lon}">${p.ele!=null?`<ele>${p.ele}</ele>`:''}<time>${esc(iso(p.t))}</time></trkpt>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="RunTracker" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>Run ${new Date().toLocaleString()}</name><trkseg>${trkpts}</trkseg></trk>\n</gpx>`;
+  }
+  function exportGPX(){
+    const gpx = toGPX();
+    if (!gpx) return;
+    const blob = new Blob([gpx], {type:'application/gpx+xml'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'run.gpx'; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+
+  startBtn.addEventListener('click', start);
+  pauseBtn.addEventListener('click', pause);
+  resumeBtn.addEventListener('click', resume);
+  resetBtn.addEventListener('click', reset);
+  exportBtn.addEventListener('click', exportGPX);
+
+  window.addEventListener('beforeunload', ()=>{ if (watchId!=null) navigator.geolocation.clearWatch(watchId); if (wl) wl.release(); });
+  if (!('geolocation' in navigator)) status.textContent = 'Geolocation not supported on this device.';
+})();
+</script></body>
+</html>
