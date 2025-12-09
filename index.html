@@ -29,6 +29,17 @@
     .footer { text-align:center; font-size:.8rem; color:var(--muted); margin-top:10px; }
     .link { color:#67e8f9; text-decoration:none; }
   </style>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+    />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin="">
+    </script>
 </head>
 <body>
   <main class="app">
@@ -59,6 +70,13 @@
         <div class="metric">
           <div class="label">GPS Accuracy</div>
           <div class="value" id="acc">– m</div>
+        </div>
+        <div class="metric" style="grid-column: 1 / -1;">
+          <div class="label">Route (Map)</div>
+          <div id="map"
+            style="width:100%;height:220px;border-radius:12px;
+            border:1px solid rgba(148,163,184,.3);overflow:hidden;">
+          </div>
         </div>
       </div><div class="divider"></div>
 
@@ -104,6 +122,8 @@
   const wakelock = el('wakelock');
   const filterJumps = el('filterJumps');
 
+  let map = null;
+  let routeLine = null;
   let watchId = null;
   let path = []; // {lat, lon, ele, t, acc}
   let running = false;
@@ -168,6 +188,31 @@
     }catch(e){ /* ignore */ }
   }
 
+  function ensureMap(lat, lon) {
+    if (!map) {
+      map = L.map('map').setView([lat, lon], 16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      
+      routeLine = L.polyline([], {
+        color: '#22d3ee',
+        weight: 4
+      }).addTo(map);
+    }
+  }
+  
+  function updateMapRoute() {
+    if (!map || !routeLine || path.length === 0) return;
+    const latlngs = path.map(p => [p.lat, p.lon]);
+    routeLine.setLatLngs(latlngs);
+    
+    // Keep last point in view
+    const last = path[path.length - 1];
+    map.panTo([last.lat, last.lon]);
+  }
+
   function onPos(p){
     const { latitude:lat, longitude:lon, altitude, accuracy } = p.coords;
     const t = p.timestamp;
@@ -209,6 +254,9 @@
       speed.textContent = (d/dt).toFixed(2) + ' m/s';
     }
     path.push(pt);
+    // Update map
+    ensureMap(lat, lon);
+    updateMapRoute();
   }
 
   function onErr(err){
@@ -248,6 +296,7 @@
     status.textContent = 'Ready. Grant GPS when prompted.';
     startBtn.disabled = false; pauseBtn.disabled = true; resumeBtn.disabled = true; resetBtn.disabled = true; exportBtn.disabled = true;
     speed.textContent = '0.00 m/s';
+    if (routeLine) {routeLine.setLatLngs([]);}
   }
 
   function toGPX(){
