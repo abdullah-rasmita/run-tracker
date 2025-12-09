@@ -183,6 +183,18 @@
     if (path.length>0){
       const prev = path[path.length-1];
       let d = haversine(prev, pt);
+
+      // --- NEW: speed-based standing-still filter ---
+      {
+        const dt = Math.max(1,(t - prev.t)/1000);
+        const v = d/dt;
+
+        // If speed < 0.5 m/s, treat as "not moving"
+        if (v < 0.2) {
+          d = 0;
+        }
+      }
+      
       // filter unrealistic jumps (>7 m/s over segment) if enabled
       if (filterJumps.checked) {
         const dt = Math.max(1, (t - prev.t)/1000);
